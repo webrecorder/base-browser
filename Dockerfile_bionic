@@ -1,0 +1,84 @@
+FROM ubuntu:bionic
+
+# initial setup:
+# 1. perform update
+# 2. install apt-utils (for add-apt-repository) and debconf-utils (so package installs are good),
+#    upgrade, install common packages (including deps!) for easy package installation
+RUN DEBIAN_FRONTEND=noninteractive apt-get -y update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -y install apt-utils debconf-utils \
+    && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade \
+    && DEBIAN_FRONTEND=noninteractive apt-get -y install software-properties-common
+# accept the mscorefonts install eulas (for noninteractive mode installs) so Times New Roman et. al. fonts are rendered correctly
+RUN echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true | debconf-set-selections
+RUN echo ttf-mscorefonts-installer msttcorefonts/present-mscorefonts-eula note | debconf-set-selections
+# install apt-fast (makes bulk installs super fast using 5 connections vs only 1)
+RUN add-apt-repository ppa:apt-fast/stable && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y install apt-fast
+# install packages necessary for building packages (includes lots oh deps), install the codecs (ffmeg, etc), ensure apt understands https etc
+RUN DEBIAN_FRONTEND=noninteractive apt-fast -y install build-essential ubuntu-restricted-extras apt-transport-https ca-certificates
+# big install of deps needed for browsers (main chunk came from chrome deps requires) and building differing version of python et. al.
+RUN DEBIAN_FRONTEND=noninteractive apt-fast -y install make libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+    wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev libffi-dev net-tools libnss3-tools x11vnc \
+    libatk-bridge2.0-0 libatk1.0-0 libcairo2 libcups2  libdbus-1-3  libexpat1  libgdk-pixbuf2.0-0  libglib2.0-0 \
+    libgtk-3-0  libnspr4 libnss3-tools libpango-1.0-0  libpangocairo-1.0-0  libappindicator3-1  libuuid1  libx11-6 \
+    libx11-xcb1 libxcb1  libxcomposite1 libxcursor1  libxdamage1  libxext6 libxfixes3 libxi6  libxrandr2  libxrender1 \
+    libxss1 libxtst6 lsb-release libasound2 xdg-utils xvfb curl wget vim socat jwm autocutsel dnsutils pulseaudio \
+    libopus-dev libu2f-udev indicator-application libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-doc gstreamer1.0-tools
+# install python stuff
+RUN DEBIAN_FRONTEND=noninteractive apt-fast -y install git sudo python3-dev libnss3-tools python2.7 python2.7-dev python-pip python-openssl
+
+
+## sudo
+RUN useradd browser --shell /bin/bash --create-home \
+  && usermod -a -G sudo browser \
+  && echo 'ALL ALL = (ALL) NOPASSWD: ALL' >> /etc/sudoers \
+  && echo 'browser:secret' | chpasswd
+
+
+# fonts
+RUN DEBIAN_FRONTEND=noninteractive apt-fast -qqy --no-install-recommends install \
+    fonts-ipafont-gothic \
+    xfonts-100dpi \
+    xfonts-75dpi \
+    xfonts-cyrillic \
+    xfonts-scalable \
+    xfonts-base \
+    fonts-liberation \
+    fonts-arphic-bkai00mp fonts-arphic-bsmi00lp fonts-arphic-gbsn00lp fonts-arphic-gkai00mp fonts-arphic-ukai fonts-farsiweb fonts-nafees fonts-sil-abyssinica fonts-sil-ezra fonts-sil-padauk fonts-unfonts-extra fonts-unfonts-core fonts-indic fonts-thai-tlwg fonts-lklug-sinhala \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/
+
+COPY requirements.txt /app/
+
+COPY jwmrc /home/browser/.jwmrc
+
+RUN pip install -U setuptools pip
+
+RUN pip install -U -r requirements.txt
+
+
+ADD run_browser /usr/bin/run_browser
+COPY audio_proxy.py /app/audio_proxy.py
+COPY audio_stream.sh /app/audio_stream.sh
+COPY rebind.so /usr/local/lib/rebind.so
+
+COPY entry_point.sh /app/entry_point.sh
+
+EXPOSE 6080
+EXPOSE 6082
+
+ENV TS 1996
+ENV URL about:blank
+
+ENV SCREEN_WIDTH 1360
+ENV SCREEN_HEIGHT 1020
+ENV SCREEN_DEPTH 16
+ENV DISPLAY :99
+
+ENV PROXY_PORT 8080
+ENV PROXY_GET_CA http://wsgiprox/download/pem
+ENV IDLE_TIMEOUT ""
+ENV AUDIO_TYPE ""
+
+CMD /app/entry_point.sh
