@@ -145,9 +145,12 @@ cd .. && \
 rm -rvf /gst-plugins-good
 
 # Fetch and build gst-plugins-bad
-RUN git clone -b $GST_VERSION --depth 1 git://anongit.freedesktop.org/git/gstreamer/gst-plugins-bad && \
+#RUN git clone -b $GST_VERSION --depth 1 git://anongit.freedesktop.org/git/gstreamer/gst-plugins-bad && \
+#cd gst-plugins-bad && \
+#git checkout $GST_VERSION && \
+RUN git clone -b fixed-port --depth 1 git://github.com/ikreymer/gst-plugins-bad.git && \
 cd gst-plugins-bad && \
-git checkout $GST_VERSION && \
+git checkout fixed-port && \
 ./autogen.sh --prefix=/usr \
 --disable-gtk-doc \
 --disable-accurip \

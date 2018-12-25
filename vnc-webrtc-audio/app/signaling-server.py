@@ -30,6 +30,8 @@ options = parser.parse_args(sys.argv[1:])
 ADDR_PORT = (options.addr, options.port)
 KEEPALIVE_TIMEOUT = options.keepalive_timeout
 
+port_msg = None
+
 ############### Global data ###############
 
 # Format: {uid: (Peer WebSocketServerProtocol,
@@ -114,7 +116,7 @@ async def remove_peer(uid):
 ############### Handler functions ###############
 
 async def connection_handler(ws, uid):
-    global peers, sessions, rooms
+    global peers, sessions, rooms, port_msg
     raddr = ws.remote_address
     peer_status = None
     peers[uid] = [ws, raddr, peer_status]
@@ -180,6 +182,11 @@ async def connection_handler(ws, uid):
             sessions[uid] = callee_id
             peers[callee_id][2] = 'session'
             sessions[callee_id] = uid
+
+            if port_msg:
+                print('Signaling send port msg: ', port_msg)
+                await ws.send(port_msg)
+                port_msg = None
         # Requested joining or creation of a room
         elif msg.startswith('ROOM'):
             print('Signaling server: {!r} command {!r}'.format(uid, msg))
@@ -207,6 +214,11 @@ async def connection_handler(ws, uid):
                 msg = 'ROOM_PEER_JOINED {}'.format(uid)
                 print('Signaling server: room {}: {} -> {}: {}'.format(room_id, uid, pid, msg))
                 await wsp.send(msg)
+
+        elif msg.startswith('PORT'):
+            port_msg = msg
+            print('Signaling server: got port msg', port_msg)
+
         else:
             print('Signaling server: Ignoring unknown message {!r} from {!r}'.format(msg, uid))
 

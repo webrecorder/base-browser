@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import argparse
+import re
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -23,11 +24,16 @@ webrtcbin name=sendrecv bundle-policy=max-bundle
  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
 '''
 
+
+LOCAL_HOST = os.environ.get('LOCAL_HOST', '127.0.0.1')
+
+
 #STUN_SERVER = 'stun://stun.stunprotocol.org:3478'
 STUN_SERVER = 'stun://stun.l.google.com:19302'
 
+#webrtcbin name=sendrecv stun-server={0} !
 PIPELINE_DESC = '''
-webrtcbin name=sendrecv stun-server={0} !
+ webrtcbin name=sendrecv !
  pulsesrc buffer-time=128000 latency-time=32000  ! audioconvert ! opusenc frame-size=2.5 !
  rtpopuspay ! queue max-size-time=20000 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=97 ! sendrecv.
 '''.format(STUN_SERVER)
@@ -40,6 +46,9 @@ class WebRTCClient:
         self.webrtc = None
         self.peer_id = str(peer_id)
         self.server = server
+        self.cand_count = 1
+        self.tcp_port = None
+        self.udp_port = None
 
     async def connect(self):
         #sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
@@ -51,6 +60,11 @@ class WebRTCClient:
 
     def send_sdp_offer(self, offer):
         text = offer.sdp.as_text()
+        #text = text.replace('a=sendrecv', 'a=sendonly')
+        #text = text.replace('0.0.0.0', '127.0.0.1')
+        #text = text.replace(' 9 ', ' ' + self.tcp_port + ' ')
+        #text = text.replace('UDP/TLS/RTP/SAVPF',  'TCP/TLS/RTP/SAVPF')
+        #text = text.replace('a=setup:actpass','a=setup:passive')
         print ('Sending offer:\n%s' % text)
         msg = json.dumps({'sdp': {'type': 'offer', 'sdp': text}})
         loop = asyncio.new_event_loop()
@@ -70,6 +84,28 @@ class WebRTCClient:
         element.emit('create-offer', None, promise)
 
     def send_ice_candidate_message(self, _, mlineindex, candidate):
+        if 'typ host' not in candidate:
+            print('SKIPPING ', candidate)
+            return
+
+        if ' 9 ' in candidate:
+            print('SKIPPING ', candidate)
+            return
+
+        #candidate = re.sub('candidate[:][\d]+', 'candidate:' + str(self.cand_count), candidate)
+
+        #if 'tcptype passive' in candidate and self.tcp_port:
+        if '10235' in candidate:
+            #candidate:3 1 TCP 1010827519 127.0.0.1 49581 typ host tcptype passive 0
+            parts = candidate.split(' ')
+            parts[0] = 'candidate:' + str(self.cand_count)
+            parts[4] = LOCAL_HOST
+            parts[5] = self.tcp_port if parts[2] == 'TCP' else self.udp_port
+            candidate = ' '.join(parts)
+            print('CANDIDATE', candidate)
+
+        self.cand_count += 1
+
         icemsg = json.dumps({'ice': {'candidate': candidate, 'sdpMLineIndex': mlineindex}})
         loop = asyncio.new_event_loop()
         loop.run_until_complete(self.conn.send(icemsg))
@@ -113,7 +149,7 @@ class WebRTCClient:
             return
 
         decodebin = Gst.ElementFactory.make('decodebin')
-        decodebin.connect('pad-added', self.on_incoming_decodebin_stream)
+        #decodebin.connect('pad-added', self.on_incoming_decodebin_stream)
         self.pipe.add(decodebin)
         decodebin.sync_state_with_parent()
         self.webrtc.link(decodebin)
@@ -123,7 +159,7 @@ class WebRTCClient:
         self.webrtc = self.pipe.get_by_name('sendrecv')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
-        self.webrtc.connect('pad-added', self.on_incoming_stream)
+        #self.webrtc.connect('pad-added', self.on_incoming_stream)
         self.pipe.set_state(Gst.State.PLAYING)
 
     async def handle_sdp(self, message):
@@ -156,6 +192,9 @@ class WebRTCClient:
             elif message.startswith('ERROR'):
                 print (message)
                 return 1
+            elif message.startswith('PORT'):
+                print(message)
+                _, self.tcp_port, self.udp_port = message.split(' ')
             else:
                 await self.handle_sdp(message)
         return 0
