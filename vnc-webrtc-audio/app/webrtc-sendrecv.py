@@ -7,6 +7,7 @@ import sys
 import json
 import argparse
 import re
+import itertools
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -16,27 +17,34 @@ from gi.repository import GstWebRTC
 gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
-PIPELINE_DESC = '''
-webrtcbin name=sendrecv bundle-policy=max-bundle
- videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay !
- queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.
- audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay !
- queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
-'''
-
 
 LOCAL_HOST = os.environ.get('LOCAL_HOST', '127.0.0.1')
 
+RTP_PORT = 10235
 
-#STUN_SERVER = 'stun://stun.stunprotocol.org:3478'
-STUN_SERVER = 'stun://stun.l.google.com:19302'
 
-#webrtcbin name=sendrecv stun-server={0} !
-PIPELINE_DESC = '''
- webrtcbin name=sendrecv !
- pulsesrc buffer-time=128000 latency-time=32000  ! audioconvert ! opusenc frame-size=2.5 !
- rtpopuspay ! queue max-size-time=20000 ! application/x-rtp,media=audio,encoding-name=OPUS,payload=97 ! sendrecv.
-'''.format(STUN_SERVER)
+AUDIO_VIDEO_PIPELINE = '''
+ webrtcbin name=sendrecv bundle-policy=max-bundle min-rtp-port={0} max-rtp-port={0} min-rtcp-port={1} max-rtcp-port={1}
+ ximagesrc ! video/x-raw ! videoconvert ! queue ! vp8enc deadline=1 buffer-size=100 keyframe-max-dist=30 cpu-used=5 ! rtpvp8pay !
+ queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 ! sendrecv.
+ pulsesrc buffer-time=128000 latency-time=32000  ! audioconvert ! queue ! opusenc frame-size=2.5 ! rtpopuspay !
+ queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=96 ! sendrecv.
+'''.format(RTP_PORT, RTP_PORT + 3)
+
+
+AUDIO_PIPELINE = '''
+ webrtcbin name=sendrecv bundle-policy=max-bundle min-rtp-port={0} max-rtp-port={0} min-rtcp-port={1} max-rtcp-port={1}
+ pulsesrc buffer-time=128000 latency-time=32000  ! audioconvert ! queue ! opusenc frame-size=2.5 ! rtpopuspay !
+ queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload=97 ! sendrecv.
+'''.format(RTP_PORT, RTP_PORT + 3)
+
+
+if os.environ.get('WEBRTC_VIDEO'):
+    PIPELINE = AUDIO_VIDEO_PIPELINE
+else:
+    PIPELINE = AUDIO_PIPELINE
+
+
 
 class WebRTCClient:
     def __init__(self, id_, peer_id, server):
@@ -60,11 +68,6 @@ class WebRTCClient:
 
     def send_sdp_offer(self, offer):
         text = offer.sdp.as_text()
-        #text = text.replace('a=sendrecv', 'a=sendonly')
-        #text = text.replace('0.0.0.0', '127.0.0.1')
-        #text = text.replace(' 9 ', ' ' + self.tcp_port + ' ')
-        #text = text.replace('UDP/TLS/RTP/SAVPF',  'TCP/TLS/RTP/SAVPF')
-        #text = text.replace('a=setup:actpass','a=setup:passive')
         print ('Sending offer:\n%s' % text)
         msg = json.dumps({'sdp': {'type': 'offer', 'sdp': text}})
         loop = asyncio.new_event_loop()
@@ -74,6 +77,7 @@ class WebRTCClient:
         promise.wait()
         reply = promise.get_reply()
         offer = reply.get_value('offer')
+
         promise = Gst.Promise.new()
         self.webrtc.emit('set-local-description', offer, promise)
         promise.interrupt()
@@ -85,24 +89,32 @@ class WebRTCClient:
 
     def send_ice_candidate_message(self, _, mlineindex, candidate):
         if 'typ host' not in candidate:
-            print('SKIPPING ', candidate)
             return
 
         if ' 9 ' in candidate:
-            print('SKIPPING ', candidate)
             return
 
-        #candidate = re.sub('candidate[:][\d]+', 'candidate:' + str(self.cand_count), candidate)
+        parts = candidate.split(' ')
 
-        #if 'tcptype passive' in candidate and self.tcp_port:
-        if '10235' in candidate:
-            #candidate:3 1 TCP 1010827519 127.0.0.1 49581 typ host tcptype passive 0
-            parts = candidate.split(' ')
-            parts[0] = 'candidate:' + str(self.cand_count)
+        if parts[1] == '2':
+            return
+
+        parts[0] = 'candidate:' + str(self.cand_count)
+
+        if RTP_PORT in candidate:
+            orig_host = parts[4]
+            orig_port = parts[5]
+            parts.extend(itertools.repeat('', 12 - len(parts)))
             parts[4] = LOCAL_HOST
             parts[5] = self.tcp_port if parts[2] == 'TCP' else self.udp_port
-            candidate = ' '.join(parts)
-            print('CANDIDATE', candidate)
+            parts[6] = 'typ'
+            parts[7] = 'srflx'
+            parts[8] = 'raddr'
+            parts[9] = orig_host
+            parts[10] = 'rport'
+            parts[11] = orig_port
+
+        candidate = ' '.join(parts)
 
         self.cand_count += 1
 
@@ -110,56 +122,11 @@ class WebRTCClient:
         loop = asyncio.new_event_loop()
         loop.run_until_complete(self.conn.send(icemsg))
 
-    def on_incoming_decodebin_stream(self, _, pad):
-        if not pad.has_current_caps():
-            print (pad, 'has no caps, ignoring')
-            return
-
-        caps = pad.get_current_caps()
-        #assert (len(caps))
-        #s = caps[0]
-        #name = s.get_name()
-        name = caps.to_string()
-        if name.startswith('video'):
-            q = Gst.ElementFactory.make('queue')
-            conv = Gst.ElementFactory.make('videoconvert')
-            sink = Gst.ElementFactory.make('autovideosink')
-            #self.pipe.add(q, conv, sink)
-            self.pipe.add(q)
-            self.pipe.add(conv)
-            self.pipe.add(sink)
-            self.pipe.sync_children_states()
-            pad.link(q.get_static_pad('sink'))
-            q.link(conv)
-            conv.link(sink)
-        elif name.startswith('audio'):
-            q = Gst.ElementFactory.make('queue')
-            conv = Gst.ElementFactory.make('audioconvert')
-            resample = Gst.ElementFactory.make('audioresample')
-            sink = Gst.ElementFactory.make('autoaudiosink')
-            self.pipe.add(q, conv, resample, sink)
-            self.pipe.sync_children_states()
-            pad.link(q.get_static_pad('sink'))
-            q.link(conv)
-            conv.link(resample)
-            resample.link(sink)
-
-    def on_incoming_stream(self, _, pad):
-        if pad.direction != Gst.PadDirection.SRC:
-            return
-
-        decodebin = Gst.ElementFactory.make('decodebin')
-        #decodebin.connect('pad-added', self.on_incoming_decodebin_stream)
-        self.pipe.add(decodebin)
-        decodebin.sync_state_with_parent()
-        self.webrtc.link(decodebin)
-
     def start_pipeline(self):
-        self.pipe = Gst.parse_launch(PIPELINE_DESC)
+        self.pipe = Gst.parse_launch(PIPELINE)
         self.webrtc = self.pipe.get_by_name('sendrecv')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
-        #self.webrtc.connect('pad-added', self.on_incoming_stream)
         self.pipe.set_state(Gst.State.PLAYING)
 
     async def handle_sdp(self, message):
