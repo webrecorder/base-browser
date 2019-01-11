@@ -6,8 +6,6 @@ import os
 import sys
 import json
 import argparse
-import re
-import itertools
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -18,9 +16,7 @@ gi.require_version('GstSdp', '1.0')
 from gi.repository import GstSdp
 
 
-LOCAL_HOST = os.environ.get('LOCAL_HOST', '127.0.0.1')
-
-RTP_PORT = 10235
+RTP_PORT = int(os.environ.get('RTP_PORT', '10235'))
 
 
 AUDIO_VIDEO_PIPELINE = '''
@@ -54,9 +50,6 @@ class WebRTCClient:
         self.webrtc = None
         self.peer_id = str(peer_id)
         self.server = server
-        self.cand_count = 1
-        self.tcp_port = None
-        self.udp_port = None
 
     async def connect(self):
         #sslctx = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
@@ -88,35 +81,13 @@ class WebRTCClient:
         element.emit('create-offer', None, promise)
 
     def send_ice_candidate_message(self, _, mlineindex, candidate):
+        # reject any non-host candidates
         if 'typ host' not in candidate:
             return
 
+        # reject any active connect ccandidates
         if ' 9 ' in candidate:
             return
-
-        parts = candidate.split(' ')
-
-        if parts[1] == '2':
-            return
-
-        parts[0] = 'candidate:' + str(self.cand_count)
-
-        if RTP_PORT in candidate:
-            orig_host = parts[4]
-            orig_port = parts[5]
-            parts.extend(itertools.repeat('', 12 - len(parts)))
-            parts[4] = LOCAL_HOST
-            parts[5] = self.tcp_port if parts[2] == 'TCP' else self.udp_port
-            parts[6] = 'typ'
-            parts[7] = 'srflx'
-            parts[8] = 'raddr'
-            parts[9] = orig_host
-            parts[10] = 'rport'
-            parts[11] = orig_port
-
-        candidate = ' '.join(parts)
-
-        self.cand_count += 1
 
         icemsg = json.dumps({'ice': {'candidate': candidate, 'sdpMLineIndex': mlineindex}})
         loop = asyncio.new_event_loop()
@@ -159,9 +130,6 @@ class WebRTCClient:
             elif message.startswith('ERROR'):
                 print (message)
                 return 1
-            elif message.startswith('PORT'):
-                print(message)
-                _, self.tcp_port, self.udp_port = message.split(' ')
             else:
                 await self.handle_sdp(message)
         return 0
