@@ -1,6 +1,31 @@
 version: '3.3'
 
 services:
-   base:
-      image: 'oldwebtoday/base-browser'
-      build: ./
+
+   base-xenial:
+      image: 'oldwebtoday/base-browser:16.04'
+      build:
+        dockerfile: Dockerfile.xenial
+        context: ./
+        labels:
+            "wr.base": "ubuntu:16.04"
+
+
+   base-bionic:
+      image: 'oldwebtoday/base-browser:18.04'
+      build:
+        dockerfile: Dockerfile.bionic
+        context: ./
+        labels:
+            "wr.base": "ubuntu:18.04"
+
+
+   base-latest:
+      image: 'oldwebtoday/base-browser:latest'
+      build:
+        dockerfile: Dockerfile.bionic
+        context: ./
+        labels:
+            "wr.base": "ubuntu:18.04"
+
+
