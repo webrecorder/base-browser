@@ -7,21 +7,20 @@ if [[ -n "$PROXY_HOST" && -n "$PROXY_PORT" ]]; then
         echo "IP: $IP"
     fi
 
+    export http_proxy=http://$PROXY_HOST:$PROXY_PORT
+    export https_proxy=http://$PROXY_HOST:$PROXY_PORT
+
     # if PROXY_CA_FILE is set and does not exist..
     if [[ -n "$PROXY_CA_FILE" ]] && [ ! -f "$PROXY_CA_FILE" ]; then
         if [[ -n "$PROXY_CA_URL" ]]; then
             # Get CA via specified URL
-            until curl --output /dev/null --silent --head --fail "$PROXY_HOST:$PROXY_PORT"; do
+            #until curl --output /dev/null --silent --head --fail "$PROXY_HOST:$PROXY_PORT"; do
+            until wget -O "$PROXY_CA_FILE" "$PROXY_CA_URL"; do
                 printf 'Waiting for proxy...'
                 sleep 1
             done
-
-            curl -x "$PROXY_HOST:$PROXY_PORT"  "$PROXY_CA_URL" > "$PROXY_CA_FILE"
         fi
     fi
-
-    export http_proxy=http://$PROXY_HOST:$PROXY_PORT
-    export https_proxy=http://$PROXY_HOST:$PROXY_PORT
 fi
 
 # Run browser here
