@@ -14,7 +14,6 @@ if [[ -n "$PROXY_HOST" && -n "$PROXY_PORT" ]]; then
     if [[ -n "$PROXY_CA_FILE" ]] && [ ! -f "$PROXY_CA_FILE" ]; then
         if [[ -n "$PROXY_CA_URL" ]]; then
             # Get CA via specified URL
-            #until curl --output /dev/null --silent --head --fail "$PROXY_HOST:$PROXY_PORT"; do
             until wget -O "$PROXY_CA_FILE" "$PROXY_CA_URL"; do
                 printf 'Waiting for proxy...'
                 sleep 1
